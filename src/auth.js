@@ -2,6 +2,7 @@
 const core = require('@actions/core');
 const rsasign = require('jsrsasign');
 const fs = require('fs');
+const { default: got } = require('got');
 
 const defaultKubernetesTokenPath = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 /***
@@ -10,12 +11,13 @@ const defaultKubernetesTokenPath = '/var/run/secrets/kubernetes.io/serviceaccoun
  * @param {import('got').Got} client
  */
 async function retrieveToken(method, client) {
-    const path = core.getInput('path', { required: false }) || method;
+    let path = core.getInput('path', { required: false }) || method;
+    path = `v1/auth/${path}/login`
 
     switch (method) {
         case 'approle': {
             const vaultRoleId = core.getInput('roleId', { required: true });
-            const vaultSecretId = core.getInput('secretId', { required: true });
+            const vaultSecretId = core.getInput('secretId', { required: false });
             return await getClientToken(client, method, path, { role_id: vaultRoleId, secret_id: vaultSecretId });
         }
         case 'github': {
@@ -25,7 +27,7 @@ async function retrieveToken(method, client) {
         case 'jwt': {
             /** @type {string} */
             let jwt;
-            const role = core.getInput('role', { required: true });
+            const role = core.getInput('role', { required: false });
             const privateKeyRaw = core.getInput('jwtPrivateKey', { required: false });
             const privateKey = Buffer.from(privateKeyRaw, 'base64').toString();
             const keyPassword = core.getInput('jwtKeyPassword', { required: false });
@@ -48,6 +50,13 @@ async function retrieveToken(method, client) {
                 throw new Error("Role Name must be set and a kubernetes token must set")
             }
             return await getClientToken(client, method, path, { jwt: data, role: role })
+        }
+        case 'userpass': 
+        case 'ldap': {
+            const username = core.getInput('username', { required: true });
+            const password = core.getInput('password', { required: true });
+            path = path + `/${username}`
+            return await getClientToken(client, method, path, { password: password })
         }
 
         default: {
@@ -106,10 +115,19 @@ async function getClientToken(client, method, path, payload) {
         responseType,
     };
 
-    core.debug(`Retrieving Vault Token from v1/auth/${path}/login endpoint`);
+    core.debug(`Retrieving Vault Token from ${path} endpoint`);
 
     /** @type {import('got').Response<VaultLoginResponse>} */
-    const response = await client.post(`v1/auth/${path}/login`, options);
+    let response;
+    try {
+        response = await client.post(`${path}`, options);
+    } catch (err) {
+        if (err instanceof got.HTTPError) {
+            throw Error(`failed to retrieve vault token. code: ${err.code}, message: ${err.message}, vaultResponse: ${JSON.stringify(err.response.body)}`)
+        } else {
+            throw err
+        }
+    }
     if (response && response.body && response.body.auth && response.body.auth.client_token) {
         core.debug('✔ Vault Token successfully retrieved');
 

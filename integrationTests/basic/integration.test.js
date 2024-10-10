@@ -8,20 +8,21 @@ const { when } = require('jest-when');
 const { exportSecrets } = require('../../src/action');
 
 const vaultUrl = `http://${process.env.VAULT_HOST || 'localhost'}:${process.env.VAULT_PORT || '8200'}`;
+const vaultToken = `${process.env.VAULT_TOKEN || 'testtoken'}`
 
 describe('integration', () => {
     beforeAll(async () => {
         // Verify Connection
         await got(`${vaultUrl}/v1/secret/config`, {
             headers: {
-                'X-Vault-Token': 'testtoken',
+                'X-Vault-Token': vaultToken,
             },
         });
 
         await got(`${vaultUrl}/v1/secret/data/test`, {
             method: 'POST',
             headers: {
-                'X-Vault-Token': 'testtoken',
+                'X-Vault-Token': vaultToken,
             },
             json: {
                 data: {
@@ -30,10 +31,18 @@ describe('integration', () => {
             },
         });
 
+        await got(`${vaultUrl}/v1/secret/data/test-with-dot-char`, {
+            method: 'POST',
+            headers: {
+                'X-Vault-Token': vaultToken,
+            },
+            body: `{"data":{"secret.foo":"SUPERSECRET"}}`
+        });
+
         await got(`${vaultUrl}/v1/secret/data/nested/test`, {
             method: 'POST',
             headers: {
-                'X-Vault-Token': 'testtoken',
+                'X-Vault-Token': vaultToken,
             },
             json: {
                 data: {
@@ -45,7 +54,7 @@ describe('integration', () => {
         await got(`${vaultUrl}/v1/secret/data/foobar`, {
             method: 'POST',
             headers: {
-                'X-Vault-Token': 'testtoken',
+                'X-Vault-Token': vaultToken,
             },
             json: {
                 data: {
@@ -59,7 +68,7 @@ describe('integration', () => {
             await got(`${vaultUrl}/v1/sys/mounts/secret-kv1`, {
                 method: 'POST',
                 headers: {
-                    'X-Vault-Token': 'testtoken',
+                    'X-Vault-Token': vaultToken,
                 },
                 json: {
                     type: 'kv'
@@ -77,7 +86,7 @@ describe('integration', () => {
         await got(`${vaultUrl}/v1/secret-kv1/test`, {
             method: 'POST',
             headers: {
-                'X-Vault-Token': 'testtoken',
+                'X-Vault-Token': vaultToken,
             },
             json: {
                 secret: 'CUSTOMSECRET',
@@ -87,7 +96,7 @@ describe('integration', () => {
         await got(`${vaultUrl}/v1/secret-kv1/foobar`, {
             method: 'POST',
             headers: {
-                'X-Vault-Token': 'testtoken',
+                'X-Vault-Token': vaultToken,
             },
             json: {
                 fookv1: 'bar',
@@ -97,7 +106,7 @@ describe('integration', () => {
         await got(`${vaultUrl}/v1/secret-kv1/nested/test`, {
             method: 'POST',
             headers: {
-                'X-Vault-Token': 'testtoken',
+                'X-Vault-Token': vaultToken,
             },
             json: {
                 "other-Secret-dash": 'OTHERCUSTOMSECRET',
@@ -109,19 +118,49 @@ describe('integration', () => {
         jest.resetAllMocks();
 
         when(core.getInput)
-            .calledWith('url')
+            .calledWith('url', expect.anything())
             .mockReturnValueOnce(`${vaultUrl}`);
 
         when(core.getInput)
-            .calledWith('token')
-            .mockReturnValueOnce('testtoken');
+            .calledWith('token', expect.anything())
+            .mockReturnValueOnce(vaultToken);
     });
 
     function mockInput(secrets) {
         when(core.getInput)
-            .calledWith('secrets')
+            .calledWith('secrets', expect.anything())
             .mockReturnValueOnce(secrets);
     }
+
+    function mockIgnoreNotFound(shouldIgnore) {
+        when(core.getInput)
+            .calledWith('ignoreNotFound', expect.anything())
+            .mockReturnValueOnce(shouldIgnore);
+    }
+
+
+    it('prints a nice error message when secret not found', async () => {
+        mockInput(`secret/data/test secret ;
+        secret/data/test secret | NAMED_SECRET ;
+        secret/data/notFound kehe | NO_SIR ;`);
+
+        await expect(exportSecrets()).rejects.toEqual(Error(`Unable to retrieve result for "secret/data/notFound" because it was not found: {"errors":[]}`));
+    })
+
+    it('does not error when secret not found and ignoreNotFound is true', async () => {
+        mockInput(`secret/data/test secret ;
+        secret/data/test secret | NAMED_SECRET ;
+        secret/data/notFound kehe | NO_SIR ;`);
+
+        mockIgnoreNotFound("true");
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledTimes(2);
+
+        expect(core.exportVariable).toBeCalledWith('SECRET', 'SUPERSECRET');
+        expect(core.exportVariable).toBeCalledWith('NAMED_SECRET', 'SUPERSECRET');
+    })
 
     it('get simple secret', async () => {
         mockInput('secret/data/test secret');
@@ -162,6 +201,36 @@ describe('integration', () => {
         expect(core.exportVariable).toBeCalledWith('OTHERSECRETDASH', 'OTHERSUPERSECRET');
     });
 
+    it('get wildcard secrets with dot char', async () => {
+        mockInput(`secret/data/test-with-dot-char * ;`);
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledTimes(1);
+
+        expect(core.exportVariable).toBeCalledWith('SECRET__FOO', 'SUPERSECRET');
+    });
+
+    it('get wildcard secrets', async () => {
+        mockInput(`secret/data/test * ;`);
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledTimes(1);
+
+        expect(core.exportVariable).toBeCalledWith('SECRET', 'SUPERSECRET');
+    });
+
+    it('get wildcard secrets with name prefix', async () => {
+        mockInput(`secret/data/test * | GROUP_ ;`);
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledTimes(1);
+
+        expect(core.exportVariable).toBeCalledWith('GROUP_SECRET', 'SUPERSECRET');
+    });
+
     it('leading slash kvv2', async () => {
         mockInput('/secret/data/foobar fookv2');
 
@@ -186,6 +255,34 @@ describe('integration', () => {
         expect(core.exportVariable).toBeCalledWith('OTHERSECRETDASH', 'OTHERCUSTOMSECRET');
     });
 
+    it('get K/V v1 wildcard secrets', async () => {
+        mockInput(`secret-kv1/test * ;`);
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledTimes(1);
+
+        expect(core.exportVariable).toBeCalledWith('SECRET', 'CUSTOMSECRET');
+    });
+
+    it('get K/V v1 wildcard secrets with name prefix', async () => {
+        mockInput(`secret-kv1/test * | GROUP_ ;`);
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledTimes(1);
+
+        expect(core.exportVariable).toBeCalledWith('GROUP_SECRET', 'CUSTOMSECRET');
+    });
+
+    it('get wildcard nested secret from K/V v1', async () => {
+        mockInput('secret-kv1/nested/test *');
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledWith('OTHERSECRETDASH', 'OTHERCUSTOMSECRET');
+    });
+
     it('leading slash kvv1', async () => {
         mockInput('/secret-kv1/foobar fookv1');
 
@@ -199,7 +296,7 @@ describe('integration', () => {
             await got(`${vaultUrl}/v1/cubbyhole/test`, {
                 method: 'POST',
                 headers: {
-                    'X-Vault-Token': 'testtoken',
+                    'X-Vault-Token': vaultToken,
                 },
                 json: {
                     foo: "bar",
@@ -216,6 +313,17 @@ describe('integration', () => {
             expect(core.exportVariable).toBeCalledWith('FOO', 'bar');
         });
 
+        it('wildcard supports cubbyhole', async () => {            
+            mockInput('/cubbyhole/test *');
+
+            await exportSecrets();
+            
+            expect(core.exportVariable).toBeCalledTimes(2);
+
+            expect(core.exportVariable).toBeCalledWith('FOO', 'bar');
+            expect(core.exportVariable).toBeCalledWith('ZIP', 'zap');
+        });
+        
         it('caches responses', async () => {            
             mockInput(`
             /cubbyhole/test foo ;

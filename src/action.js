@@ -3,19 +3,26 @@ const core = require('@actions/core');
 const command = require('@actions/core/lib/command');
 const got = require('got').default;
 const jsonata = require('jsonata');
+const { normalizeOutputKey } = require('./utils');
+const { WILDCARD } = require('./constants');
+
 const { auth: { retrieveToken }, secrets: { getSecrets } } = require('./index');
 
-const AUTH_METHODS = ['approle', 'token', 'github', 'jwt', 'kubernetes'];
+const AUTH_METHODS = ['approle', 'token', 'github', 'jwt', 'kubernetes', 'ldap', 'userpass'];
+const ENCODING_TYPES = ['base64', 'hex', 'utf8'];
 
 async function exportSecrets() {
     const vaultUrl = core.getInput('url', { required: true });
     const vaultNamespace = core.getInput('namespace', { required: false });
     const extraHeaders = parseHeadersInput('extraHeaders', { required: false });
     const exportEnv = core.getInput('exportEnv', { required: false }) != 'false';
+    const outputToken = (core.getInput('outputToken', { required: false }) || 'false').toLowerCase() != 'false';
     const exportToken = (core.getInput('exportToken', { required: false }) || 'false').toLowerCase() != 'false';
 
-    const secretsInput = core.getInput('secrets', { required: true });
+    const secretsInput = core.getInput('secrets', { required: false });
     const secretRequests = parseSecretsInput(secretsInput);
+
+    const secretEncodingType = core.getInput('secretEncodingType', { required: false });
 
     const vaultMethod = (core.getInput('method', { required: false }) || 'token').toLowerCase();
     const authPayload = core.getInput('authPayload', { required: false });
@@ -26,7 +33,15 @@ async function exportSecrets() {
     const defaultOptions = {
         prefixUrl: vaultUrl,
         headers: {},
-        https: {}
+        https: {},
+        retry: {
+            statusCodes: [
+                ...got.defaults.options.retry.statusCodes,
+                // Vault returns 412 when the token in use hasn't yet been replicated
+                // to the performance replica queried. See issue #332.
+                412,
+            ]
+        }
     }
 
     const tlsSkipVerify = (core.getInput('tlsSkipVerify', { required: false }) || 'false').toLowerCase() != 'false';
@@ -58,11 +73,14 @@ async function exportSecrets() {
     }
 
     const vaultToken = await retrieveToken(vaultMethod, got.extend(defaultOptions));
+    core.setSecret(vaultToken)
     defaultOptions.headers['X-Vault-Token'] = vaultToken;
     const client = got.extend(defaultOptions);
 
+    if (outputToken === true) {
+      core.setOutput('vault_token', `${vaultToken}`);
+    }
     if (exportToken === true) {
-        command.issue('add-mask', vaultToken);
         core.exportVariable('VAULT_TOKEN', `${vaultToken}`);
     }
 
@@ -73,14 +91,26 @@ async function exportSecrets() {
 
     const results = await getSecrets(requests, client);
 
+
     for (const result of results) {
-        const { value, request, cachedResponse } = result;
+        // Output the result
+
+        var value = result.value;
+        const request = result.request;
+        const cachedResponse = result.cachedResponse;
+
         if (cachedResponse) {
             core.debug('ℹ using cached response');
         }
+
+        // if a secret is encoded, decode it
+        if (ENCODING_TYPES.includes(secretEncodingType)) {
+            value = Buffer.from(value, secretEncodingType).toString();
+        }
+
         for (const line of value.replace(/\r/g, '').split('\n')) {
             if (line.length > 0) {
-                command.issue('add-mask', line);
+                core.setSecret(line);
             }
         }
         if (exportEnv) {
@@ -91,7 +121,7 @@ async function exportSecrets() {
     }
 };
 
-/** @typedef {Object} SecretRequest 
+/** @typedef {Object} SecretRequest
  * @property {string} path
  * @property {string} envVarName
  * @property {string} outputVarName
@@ -103,6 +133,10 @@ async function exportSecrets() {
  * @param {string} secretsInput
  */
 function parseSecretsInput(secretsInput) {
+    if (!secretsInput) {
+      return []
+    }
+
     const secrets = secretsInput
         .split(';')
         .filter(key => !!key)
@@ -140,7 +174,7 @@ function parseSecretsInput(secretsInput) {
         const selectorAst = jsonata(selectorQuoted).ast();
         const selector = selectorQuoted.replace(new RegExp('"', 'g'), '');
 
-        if ((selectorAst.type !== "path" || selectorAst.steps[0].stages) && selectorAst.type !== "string" && !outputVarName) {
+        if (selector !== WILDCARD && (selectorAst.type !== "path" || selectorAst.steps[0].stages) && selectorAst.type !== "string" && !outputVarName) {
             throw Error(`You must provide a name for the output key when using json selectors. Input: "${secret}"`);
         }
 
@@ -158,20 +192,6 @@ function parseSecretsInput(secretsInput) {
         });
     }
     return output;
-}
-
-/**
- * Replaces any dot chars to __ and removes non-ascii charts
- * @param {string} dataKey
- * @param {boolean=} isEnvVar
- */
-function normalizeOutputKey(dataKey, isEnvVar = false) {
-    let outputKey = dataKey
-        .replace('.', '__').replace(new RegExp('-', 'g'), '').replace(/[^\p{L}\p{N}_-]/gu, '');
-    if (isEnvVar) {
-        outputKey = outputKey.toUpperCase();
-    }
-    return outputKey;
 }
 
 /**
@@ -202,6 +222,6 @@ function parseHeadersInput(inputKey, inputOptions) {
 module.exports = {
     exportSecrets,
     parseSecretsInput,
-    normalizeOutputKey,
-    parseHeadersInput
+    parseHeadersInput,
 };
+

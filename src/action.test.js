@@ -8,7 +8,6 @@ const got = require('got');
 const {
     exportSecrets,
     parseSecretsInput,
-    parseResponse,
     parseHeadersInput
 } = require('./action');
 
@@ -94,7 +93,7 @@ describe('parseSecretsInput', () => {
 describe('parseHeaders', () => {
     it('parses simple header', () => {
         when(core.getInput)
-            .calledWith('extraHeaders')
+            .calledWith('extraHeaders', undefined)
             .mockReturnValueOnce('TEST: 1');
         const result = parseHeadersInput('extraHeaders');
         expect(Array.from(result)).toContainEqual(['test', '1']);
@@ -102,7 +101,7 @@ describe('parseHeaders', () => {
 
     it('parses simple header with whitespace', () => {
         when(core.getInput)
-            .calledWith('extraHeaders')
+            .calledWith('extraHeaders', undefined)
             .mockReturnValueOnce(`
             TEST: 1
             `);
@@ -112,7 +111,7 @@ describe('parseHeaders', () => {
 
     it('parses multiple headers', () => {
         when(core.getInput)
-            .calledWith('extraHeaders')
+            .calledWith('extraHeaders', undefined)
             .mockReturnValueOnce(`
             TEST: 1
             FOO: bAr
@@ -124,7 +123,7 @@ describe('parseHeaders', () => {
 
     it('parses null response', () => {
         when(core.getInput)
-            .calledWith('extraHeaders')
+            .calledWith('extraHeaders', undefined)
             .mockReturnValueOnce(null);
         const result = parseHeadersInput('extraHeaders');
         expect(Array.from(result)).toHaveLength(0);
@@ -136,29 +135,29 @@ describe('exportSecrets', () => {
         jest.resetAllMocks();
 
         when(core.getInput)
-            .calledWith('url')
+            .calledWith('url', expect.anything())
             .mockReturnValueOnce('http://vault:8200');
 
         when(core.getInput)
-            .calledWith('token')
+            .calledWith('token', expect.anything())
             .mockReturnValueOnce('EXAMPLE');
     });
 
     function mockInput(key) {
         when(core.getInput)
-            .calledWith('secrets')
+            .calledWith('secrets', expect.anything())
             .mockReturnValueOnce(key);
     }
 
     function mockVersion(version) {
         when(core.getInput)
-            .calledWith('kv-version')
+            .calledWith('kv-version', expect.anything())
             .mockReturnValueOnce(version);
     }
 
     function mockExtraHeaders(headerString) {
         when(core.getInput)
-            .calledWith('extraHeaders')
+            .calledWith('extraHeaders', expect.anything())
             .mockReturnValueOnce(headerString);
     }
 
@@ -181,8 +180,19 @@ describe('exportSecrets', () => {
 
     function mockExportToken(doExport) {
         when(core.getInput)
-            .calledWith('exportToken')
+            .calledWith('exportToken', expect.anything())
             .mockReturnValueOnce(doExport);
+    }
+
+    function mockOutputToken(doOutput) {
+      when(core.getInput)
+          .calledWith('outputToken', expect.anything())
+          .mockReturnValueOnce(doOutput);
+  }
+    function mockEncodeType(doEncode) {
+        when(core.getInput)
+            .calledWith('secretEncodingType', expect.anything())
+            .mockReturnValueOnce(doEncode);
     }
 
     it('simple secret retrieval', async () => {
@@ -195,6 +205,68 @@ describe('exportSecrets', () => {
 
         expect(core.exportVariable).toBeCalledWith('KEY', '1');
         expect(core.setOutput).toBeCalledWith('key', '1');
+    });
+
+    it('encoded secret retrieval', async () => {
+        mockInput('test key');
+        mockVaultData({
+            key: 'MQ=='
+        });
+        mockEncodeType('base64');
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledWith('KEY', '1');
+        expect(core.setOutput).toBeCalledWith('key', '1');
+    });
+
+    it('JSON data secret retrieval', async () => {
+        const jsonData = {"x":1,"y":2};
+
+        let result = JSON.stringify(jsonData);
+
+        mockInput('test key');
+        mockVaultData({
+            key: jsonData,
+        });
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledWith('KEY', result);
+        expect(core.setOutput).toBeCalledWith('key', result);
+    });
+
+    it('JSON string secret retrieval', async () => {
+        const jsonString = '{"x":1,"y":2}';
+
+        mockInput('test key');
+        mockVaultData({
+            key: jsonString,
+        });
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledWith('KEY', jsonString);
+        expect(core.setOutput).toBeCalledWith('key', jsonString);
+    });
+
+    it('multi-line JSON string secret retrieval', async () => {
+        const jsonString = `
+        {
+            "x":1,
+            "y":"bar"
+        }
+        `;
+
+        mockInput('test key');
+        mockVaultData({
+            key: jsonString,
+        });
+
+        await exportSecrets();
+
+        expect(core.exportVariable).toBeCalledWith('KEY', jsonString);
+        expect(core.setOutput).toBeCalledWith('key', jsonString);
     });
 
     it('intl secret retrieval', async () => {
@@ -305,13 +377,36 @@ describe('exportSecrets', () => {
 
         await exportSecrets();
 
-        expect(command.issue).toBeCalledTimes(1);
+        expect(core.setSecret).toBeCalledTimes(2);
 
-        expect(command.issue).toBeCalledWith('add-mask', 'secret');
+        expect(core.setSecret).toBeCalledWith('secret');
         expect(core.setOutput).toBeCalledWith('key', 'secret');
     })
 
-    it('multi-line secret gets masked for each line', async () => {
+    it('multi-line secret', async () => {
+        const multiLineString = `ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEAklOUpkDHrfHY17SbrmTIpNLTGK9Tjom/BWDSU
+GPl+nafzlHDTYW7hdI4yZ5ew18JH4JW9jbhUFrviQzM7xlELEVf4h9lFX5QVkbPppSwg0cda3
+Pbv7kOdJ/MTyBlWXFCR+HAo3FXRitBqxiX1nKhXpHAZsMciLq8V6RjsNAQwdsdMFvSlVK/7XA
+NrRFi9wrf+M7Q==`;
+
+        mockInput('test key');
+        mockVaultData({
+            key: multiLineString
+        });
+        mockExportToken("false")
+
+        await exportSecrets();
+
+        expect(core.setSecret).toBeCalledTimes(5); // 1 for each non-empty line + VAULT_TOKEN
+
+        expect(core.setSecret).toBeCalledWith("ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEAklOUpkDHrfHY17SbrmTIpNLTGK9Tjom/BWDSU");
+        expect(core.setSecret).toBeCalledWith("GPl+nafzlHDTYW7hdI4yZ5ew18JH4JW9jbhUFrviQzM7xlELEVf4h9lFX5QVkbPppSwg0cda3");
+        expect(core.setSecret).toBeCalledWith("Pbv7kOdJ/MTyBlWXFCR+HAo3FXRitBqxiX1nKhXpHAZsMciLq8V6RjsNAQwdsdMFvSlVK/7XA");
+        expect(core.setSecret).toBeCalledWith("NrRFi9wrf+M7Q==");
+        expect(core.setOutput).toBeCalledWith('key', multiLineString);
+    })
+
+    it('multi-line secret gets masked for each non-empty line', async () => {
         const multiLineString = `a multi-line string
 
 with blank lines
@@ -325,10 +420,28 @@ with blank lines
 
         await exportSecrets();
 
-        expect(command.issue).toBeCalledTimes(2); // 1 for each non-empty line.
+        expect(core.setSecret).toBeCalledTimes(3); // 1 for each non-empty line.
 
-        expect(command.issue).toBeCalledWith('add-mask', 'a multi-line string');
-        expect(command.issue).toBeCalledWith('add-mask', 'with blank lines');
+        expect(core.setSecret).toBeCalledWith('a multi-line string');
+        expect(core.setSecret).toBeCalledWith('with blank lines');
         expect(core.setOutput).toBeCalledWith('key', multiLineString);
     })
+
+  it('export only Vault token, no secrets', async () => {
+    mockExportToken("true")
+
+    await exportSecrets();
+
+    expect(core.exportVariable).toBeCalledTimes(1);
+    expect(core.exportVariable).toBeCalledWith('VAULT_TOKEN', 'EXAMPLE');
+  })
+
+  it('output only Vault token, no secrets', async () => {
+    mockOutputToken("true")
+
+    await exportSecrets();
+
+    expect(core.setOutput).toBeCalledTimes(1);
+    expect(core.setOutput).toBeCalledWith('vault_token', 'EXAMPLE');
+  })
 });

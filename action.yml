@@ -1,4 +1,4 @@
-name: 'Vault Secrets'
+name: 'HashiCorp Vault'
 description: 'A Github Action that allows you to consume HashiCorp Vault™ secrets as secure environment variables'
 inputs:
   url:
@@ -18,16 +18,16 @@ inputs:
     description: 'Vault role for specified auth method'
     required: false
   path:
-    description: 'Custom Vault path, if the auth method was mounted at a different path'
+    description: 'The Vault path for the auth method.'
     required: false
   token:
-    description: 'The Vault Token to be used to authenticate with Vault'
+    description: 'The Vault token to be used to authenticate with Vault'
     required: false
   roleId:
-    description: 'The Role Id for App Role authentication'
+    description: 'The role ID for App Role authentication'
     required: false
   secretId:
-    description: 'The Secret Id for App Role authentication'
+    description: 'The secret ID for App Role authentication'
     required: false
   githubToken:
     description: 'The Github Token to be used to authenticate with Vault'
@@ -36,6 +36,12 @@ inputs:
     description: 'The path to the Kubernetes service account secret'
     required: false
     default: '/var/run/secrets/kubernetes.io/serviceaccount/token'
+  username:
+    description: 'The username of the user to log in to Vault as. Available to both Userpass and LDAP auth methods'
+    required: false
+  password:
+    description: 'The password of the user to log in to Vault as. Available to both Userpass and LDAP auth methods'
+    required: false
   authPayload:
     description: 'The JSON payload to be sent to Vault when using a custom authentication method.'
     required: false
@@ -50,8 +56,12 @@ inputs:
     description: 'Whether or not export Vault token as environment variables.'
     default: 'false'
     required: false
+  outputToken:
+    description: 'Whether or not to set the `vault_token` output to contain the Vault token after authentication.'
+    default: 'false'
+    required: false
   caCertificate:
-    description: 'Base64 encoded CA certificate to verify the Vault server certificate.'
+    description: 'Base64 encoded CA certificate the server certificate was signed with. Defaults to CAs provided by Mozilla.'
     required: false
   clientCertificate:
     description: 'Base64 encoded client certificate for mTLS communication with the Vault server.'
@@ -76,8 +86,15 @@ inputs:
     description: 'Time in seconds, after which token expires'
     required: false
     default: 3600
+  secretEncodingType:
+    description: 'The encoding type of the secret to decode. If not specified, the secret will not be decoded. Supported values: base64, hex, utf8'
+    required: false
+  ignoreNotFound:
+    description: 'Whether or not the action should exit successfully if some requested secrets were not found.'
+    required: false
+    default: 'false'
 runs:
-  using: 'node12'
+  using: 'node20'
   main: 'dist/index.js'
 branding:
   icon: 'unlock'
